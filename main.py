@@ -113,14 +113,21 @@ def consolidate(detail, order=None):
 
     items = [(li.get("ProductTitle") or li.get("Title")) for li in lineitems
              if (li.get("ProductTitle") or li.get("Title"))]
+    # Collect ALL trackings across ALL picklists — an order can ship in several packages,
+    # and one picklist can carry multiple tracking numbers. Prefer Naviga's own Link.
     picklists = detail.get("PickLists") or []
-    carrier = ship_date = url = ref = None
-    if picklists:
-        pt = (picklists[0].get("PicklistTracking") or [])
-        ref = pt[0].get("Reference") if pt else None
-        carrier = carrier_of(ref)
-        url = tracking_url(carrier, ref)
-        ship_date = picklists[0].get("ShipDate") or detail.get("ShipDate")
+    trackings, ship_date = [], None
+    for pl in picklists:
+        ship_date = ship_date or pl.get("ShipDate")
+        for t in (pl.get("PicklistTracking") or []):
+            ref = t.get("Reference")
+            if not ref:
+                continue
+            car = carrier_of(ref)
+            trackings.append({"carrier": car, "reference": ref,
+                              "url": t.get("Link") or tracking_url(car, ref)})
+    ship_date = ship_date or detail.get("ShipDate")
+    carrier = trackings[0]["carrier"] if trackings else None
 
     def _num(x):
         try: return float(x or 0)
@@ -129,16 +136,18 @@ def consolidate(detail, order=None):
     shipped = sum(_num(li.get("QuantityShipped")) for li in lineitems)
     if ordered > 0:                       # quantity data present -> exact
         status = "preparing" if shipped <= 0 else ("partial" if shipped < ordered else "shipped")
-    else:                                 # fallback: infer from picklists
-        status = "shipped" if picklists else "preparing"
+    else:                                 # fallback: infer from trackings
+        status = "shipped" if trackings else "preparing"
 
     out = {"found": True, "status": status, "items": items,
            "order_date": (order or {}).get("OrderDate") or detail.get("OrderDate"),
            "carrier": carrier, "ship_date": ship_date,
-           # tracking_present reflects a REAL tracking reference, not just a picklist —
-           # a picklist can exist with an empty PicklistTracking, and we must not promise
-           # tracking the agent can't actually read out.
-           "tracking_present": bool(ref), "tracking_url": url, "message": None}
+           # tracking_present reflects REAL tracking references, not just a picklist.
+           "tracking_present": bool(trackings),
+           "tracking_count": len(trackings),
+           "tracking_url": trackings[0]["url"] if trackings else None,  # first (single-link / back-compat)
+           "trackings": trackings,        # ALL tracking numbers + links
+           "message": None}
     if order is not None:  # invoice-relevant extras when we came in via a PO/orderlist
         out["balance"] = order.get("BalanceAmount")
         out["order_status"] = order.get("OrderStatusDescription")
