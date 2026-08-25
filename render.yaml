@@ -1,0 +1,22 @@
+# Render Blueprint for the Pro-Ed Naviga tracking proxy.
+# New → Blueprint → connect this repo → Apply. Enter the 3 secret env vars when prompted.
+# Free plan sleeps after ~15 min idle — keep it warm with an UptimeRobot monitor on /health.
+services:
+  - type: web
+    name: proed-naviga-proxy
+    runtime: python
+    plan: free
+    region: ohio
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -b :$PORT --workers 2 --threads 8 --timeout 30 main:app
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NAVIGA_WEBSITE_ID
+        value: "187"
+      - key: NAVIGA_CLIENT_ID       # enter in Render (kept out of this public repo)
+        sync: false
+      - key: NAVIGA_CLIENT_SECRET   # secret
+        sync: false
+      - key: PROXY_API_KEY          # you choose; the flow sends it as X-Api-Key
+        sync: false
