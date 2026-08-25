@@ -141,18 +141,22 @@ def consolidate(detail, order=None):
     else:                                 # fallback: infer from trackings
         status = "shipped" if trackings else "preparing"
 
-    out = {"found": True, "status": status, "order_id": detail.get("OrderID"), "items": items,
+    out = {"found": True, "status": status,
+           "order_id": detail.get("OrderID"),                # this is the invoice / order id
+           "po_number": detail.get("PONumber"),
+           "customer_name": detail.get("SoldToCustomerName") or detail.get("BillToCustomerName"),
+           "items": items,
            "order_date": (order or {}).get("OrderDate") or detail.get("OrderDate"),
-           "carrier": carrier, "ship_date": ship_date,
+           "ship_date": ship_date,
+           "carrier": carrier,
+           "balance": detail.get("BalanceAmount", (order or {}).get("BalanceAmount")),
+           "order_status": (order or {}).get("OrderStatusDescription") or detail.get("OrderStatusDescription"),
            # tracking_present reflects REAL tracking references, not just a picklist.
            "tracking_present": bool(trackings),
            "tracking_count": len(trackings),
            "tracking_url": trackings[0]["url"] if trackings else None,  # first (single-link / back-compat)
            "trackings": trackings,        # ALL tracking numbers + links
            "message": None}
-    if order is not None:  # invoice-relevant extras when we came in via a PO/orderlist
-        out["balance"] = order.get("BalanceAmount")
-        out["order_status"] = order.get("OrderStatusDescription")
     return out
 
 # ---- core: resolve identifiers, then look up ------------------------------------
