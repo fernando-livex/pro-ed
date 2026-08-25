@@ -124,8 +124,10 @@ def consolidate(detail, order=None):
             if not ref:
                 continue
             car = carrier_of(ref)
+            # Build the URL ourselves — Naviga's FedEx Link is malformed
+            # (http://www.fedex.com/Tracking<num>); our tracking_url() is correct per carrier.
             trackings.append({"carrier": car, "reference": ref,
-                              "url": t.get("Link") or tracking_url(car, ref)})
+                              "url": tracking_url(car, ref)})
     ship_date = ship_date or detail.get("ShipDate")
     carrier = trackings[0]["carrier"] if trackings else None
 
@@ -139,7 +141,7 @@ def consolidate(detail, order=None):
     else:                                 # fallback: infer from trackings
         status = "shipped" if trackings else "preparing"
 
-    out = {"found": True, "status": status, "items": items,
+    out = {"found": True, "status": status, "order_id": detail.get("OrderID"), "items": items,
            "order_date": (order or {}).get("OrderDate") or detail.get("OrderDate"),
            "carrier": carrier, "ship_date": ship_date,
            # tracking_present reflects REAL tracking references, not just a picklist.
