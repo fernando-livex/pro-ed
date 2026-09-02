@@ -161,7 +161,9 @@ def consolidate(detail, order=None):
 
 # ---- core: resolve identifiers, then look up ------------------------------------
 def track(payload):
-    po   = (payload.get("ponumber")   or "").strip().replace(" ", "").replace("-", "")
+    # Naviga PONumber lookups are CASE-SENSITIVE: "P202702136" matches, "p202702136" returns
+    # nothing. POs can contain letters, so normalize to uppercase (digits are unaffected).
+    po   = (payload.get("ponumber")   or "").strip().replace(" ", "").replace("-", "").upper()
     cust = (payload.get("customerid") or "").strip()
     inv  = (payload.get("invoiceid")  or "").strip()
     order = None
