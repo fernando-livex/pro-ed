@@ -15,7 +15,7 @@ Always returns HTTP 200 with a slim, speakable JSON (never leaks a 401 to the ag
 Env (set at deploy — NEVER hardcode secrets):
   NAVIGA_CLIENT_ID, NAVIGA_CLIENT_SECRET, PROXY_API_KEY, [NAVIGA_WEBSITE_ID=187]
 """
-import os, time, threading
+import os, re, time, threading
 import requests
 from flask import Flask, request, jsonify
 
@@ -99,6 +99,17 @@ def tracking_url(carrier, ref):
             "USPS": f"https://tools.usps.com/go/TrackConfirmAction?tLabels={ref}",
             "FedEx":f"https://www.fedex.com/fedextrack/?trknbr={ref}"}.get(carrier)
 
+
+def zip_from_address(addr):
+    """Naviga has no zip field; the address string ends with it, e.g.
+    "...|PORTLAND, OR 97217". Take the last 5-digit group."""
+    if not addr:
+        return ""
+    if isinstance(addr, (list, tuple)):          # Naviga returns the address as lines
+        addr = " ".join(str(x) for x in addr if x)
+    m = re.findall(r"\b(\d{5})(?:-\d{4})?\b", str(addr))
+    return m[-1] if m else ""
+
 def consolidate(detail, order=None):
     if not detail or not detail.get("OrderID"):
         return {"found": False, "status": "not_found", "message": "No order found for that request."}
@@ -129,6 +140,7 @@ def consolidate(detail, order=None):
             trackings.append({"carrier": car, "reference": ref,
                               "url": tracking_url(car, ref)})
     ship_date = ship_date or detail.get("ShipDate")
+    ship_addr = (picklists[0].get("ShipToCustomerAddress") if picklists else "") or detail.get("SoldToCustomerAddress") or ""
     carrier = trackings[0]["carrier"] if trackings else None
 
     def _num(x):
@@ -149,6 +161,7 @@ def consolidate(detail, order=None):
            "order_date": (order or {}).get("OrderDate") or detail.get("OrderDate"),
            "ship_date": ship_date,
            "carrier": carrier,
+           "ship_to_zip": zip_from_address(ship_addr),
            "balance": detail.get("BalanceAmount", (order or {}).get("BalanceAmount")),
            "order_status": (order or {}).get("OrderStatusDescription") or detail.get("OrderStatusDescription"),
            # tracking_present reflects REAL tracking references, not just a picklist.
