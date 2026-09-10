@@ -194,6 +194,8 @@ def track(payload):
     cust = (payload.get("customerid") or "").strip()
     inv  = (payload.get("invoiceid")  or "").strip()
     order = None
+    # Resolve the PO -> candidate orders (a PO is NOT unique; it can match several).
+    zip3 = re.sub(r"\D", "", str(payload.get("zip3") or payload.get("zip") or ""))[:3]
     po, orders = "", []
     for cand in po_variants(po_raw):
         orders = orderlist_by_po(cand)
@@ -204,7 +206,35 @@ def track(payload):
         if not orders:
             return {"found": False, "status": "not_found",
                     "message": "I'm not finding an order under that P O number."}
-        order = orders[0]
+        if len(orders) > 1:
+            # Several orders share this PO. The caller's ship-to zip is what tells them apart.
+            if not zip3:
+                return {"found": False, "status": "multiple", "match_count": len(orders),
+                        "message": (f"I found {len(orders)} orders under that P O number. "
+                                    "What are the first three digits of the ship-to zip code?")}
+            # Most recent first: when several orders share a PO (and even a zip),
+            # the caller almost always means the latest one.
+            orders = sorted(orders, key=lambda o: str(o.get("OrderDate") or ""), reverse=True)
+            picked = None
+            for o in orders:
+                det = booksuborder(o.get("OrderID"), o.get("BillToCustomerID"))
+                pls = det.get("PickLists") or []
+                addr = (pls[0].get("ShipToCustomerAddress") if pls else "") or det.get("SoldToCustomerAddress") or ""
+                if zip_from_address(addr).startswith(zip3):
+                    picked = (o, det)
+                    break
+            if not picked:
+                return {"found": False, "status": "not_found", "match_count": len(orders),
+                        "message": ("I'm not finding an order under that P O number "
+                                    "with that ship-to zip code.")}
+            order, detail = picked
+            result = consolidate(detail, order)
+            if result.get("found") and payload.get("include_email", True):
+                preferred, _ = account_email(order.get("BillToCustomerID"))
+                result["preferred_email"] = preferred or ""
+            result["match_count"] = len(orders)
+            return result
+        order = sorted(orders, key=lambda o: str(o.get("OrderDate") or ""), reverse=True)[0]
         order_id, customer_id = order.get("OrderID"), order.get("BillToCustomerID")
     elif cust and inv:
         order_id, customer_id = inv, cust
