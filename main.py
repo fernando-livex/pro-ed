@@ -124,6 +124,27 @@ def po_variants(raw):
             out.append(cand)
     return out
 
+
+def pick_by_zip(cands, zip_in):
+    """Choose among orders that share a PO, using the caller's ship-to zip.
+
+    Cascade: a full 5-digit match wins outright; otherwise fall back to the first
+    three digits, because regional accounts span many zip codes and the caller may
+    give a local zip while the account is registered elsewhere. Callers are asked
+    for the WHOLE zip - the 3-digit tolerance is deliberately invisible to them.
+    `cands` is already sorted most-recent-first, so [0] is the latest match.
+    """
+    if len(zip_in) >= 5:
+        exact = [c for c in cands if c[2] == zip_in[:5]]
+        if exact:
+            return exact[0]
+    z3 = zip_in[:3]
+    if z3:
+        pref = [c for c in cands if c[2].startswith(z3)]
+        if pref:
+            return pref[0]
+    return None
+
 def consolidate(detail, order=None):
     if not detail or not detail.get("OrderID"):
         return {"found": False, "status": "not_found", "message": "No order found for that request."}
@@ -195,7 +216,8 @@ def track(payload):
     inv  = (payload.get("invoiceid")  or "").strip()
     order = None
     # Resolve the PO -> candidate orders (a PO is NOT unique; it can match several).
-    zip3 = re.sub(r"\D", "", str(payload.get("zip3") or payload.get("zip") or ""))[:3]
+    # Caller is asked for the full zip; we match on 5 digits first, then the first 3.
+    zip_in = re.sub(r"\D", "", str(payload.get("zip") or payload.get("zip3") or ""))
     po, orders = "", []
     for cand in po_variants(po_raw):
         orders = orderlist_by_po(cand)
@@ -208,31 +230,30 @@ def track(payload):
                     "message": "I'm not finding an order under that P O number."}
         if len(orders) > 1:
             # Several orders share this PO. The caller's ship-to zip is what tells them apart.
-            if not zip3:
+            if not zip_in:
                 return {"found": False, "status": "multiple", "match_count": len(orders),
                         "message": (f"I found {len(orders)} orders under that P O number. "
-                                    "What are the first three digits of the ship-to zip code?")}
-            # Most recent first: when several orders share a PO (and even a zip),
-            # the caller almost always means the latest one.
+                                    "What is the ship-to zip code?")}
+            # Most recent first, so ties resolve to the latest order.
             orders = sorted(orders, key=lambda o: str(o.get("OrderDate") or ""), reverse=True)
-            picked = None
+            cands = []
             for o in orders:
                 det = booksuborder(o.get("OrderID"), o.get("BillToCustomerID"))
                 pls = det.get("PickLists") or []
                 addr = (pls[0].get("ShipToCustomerAddress") if pls else "") or det.get("SoldToCustomerAddress") or ""
-                if zip_from_address(addr).startswith(zip3):
-                    picked = (o, det)
-                    break
+                cands.append((o, det, zip_from_address(addr)))
+            picked = pick_by_zip(cands, zip_in)
             if not picked:
                 return {"found": False, "status": "not_found", "match_count": len(orders),
                         "message": ("I'm not finding an order under that P O number "
                                     "with that ship-to zip code.")}
-            order, detail = picked
+            order, detail, _z = picked
             result = consolidate(detail, order)
             if result.get("found") and payload.get("include_email", True):
                 preferred, _ = account_email(order.get("BillToCustomerID"))
                 result["preferred_email"] = preferred or ""
             result["match_count"] = len(orders)
+            result["zip_match"] = "exact" if (len(zip_in) >= 5 and _z == zip_in[:5]) else "prefix3"
             return result
         order = sorted(orders, key=lambda o: str(o.get("OrderDate") or ""), reverse=True)[0]
         order_id, customer_id = order.get("OrderID"), order.get("BillToCustomerID")
@@ -248,6 +269,14 @@ def track(payload):
         preferred, addrs = account_email(customer_id)
         result["preferred_email"] = preferred
         result["emails"] = addrs
+    # Only ONE order matched, so the zip isn't needed to disambiguate. Report how well it
+    # lined up anyway (never blocks the answer) so we can see, from real calls, whether
+    # requiring a zip match on unique lookups would be safe to turn on later.
+    if zip_in and result.get("found"):
+        z = result.get("ship_to_zip") or ""
+        result["zip_match"] = ("exact"   if len(zip_in) >= 5 and z == zip_in[:5]
+                               else "prefix3" if z and z.startswith(zip_in[:3])
+                               else "mismatch")
     return result
 
 def handle():
