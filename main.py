@@ -110,6 +110,20 @@ def zip_from_address(addr):
     m = re.findall(r"\b(\d{5})(?:-\d{4})?\b", str(addr))
     return m[-1] if m else ""
 
+
+def po_variants(raw):
+    """Naviga stores POs EXACTLY as the customer wrote them, including hyphens
+    (e.g. "142-71361" matches; "14271361" does not). But callers also read digits
+    aloud with separators. So try the PO as given first, then de-hyphenated.
+    Spaces are never part of a PO. Uppercase: Naviga PONumber is case-sensitive."""
+    s = re.sub(r"\s+", "", (raw or "").strip().upper())
+    out, seen = [], set()
+    for cand in (s, s.replace("-", "")):
+        if cand and cand not in seen:
+            seen.add(cand)
+            out.append(cand)
+    return out
+
 def consolidate(detail, order=None):
     if not detail or not detail.get("OrderID"):
         return {"found": False, "status": "not_found", "message": "No order found for that request."}
@@ -176,12 +190,17 @@ def consolidate(detail, order=None):
 def track(payload):
     # Naviga PONumber lookups are CASE-SENSITIVE: "P202702136" matches, "p202702136" returns
     # nothing. POs can contain letters, so normalize to uppercase (digits are unaffected).
-    po   = (payload.get("ponumber")   or "").strip().replace(" ", "").replace("-", "").upper()
+    po_raw = payload.get("ponumber") or ""
     cust = (payload.get("customerid") or "").strip()
     inv  = (payload.get("invoiceid")  or "").strip()
     order = None
-    if po:
-        orders = orderlist_by_po(po)
+    po, orders = "", []
+    for cand in po_variants(po_raw):
+        orders = orderlist_by_po(cand)
+        if orders:
+            po = cand
+            break
+    if po_raw:
         if not orders:
             return {"found": False, "status": "not_found",
                     "message": "I'm not finding an order under that P O number."}
