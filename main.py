@@ -52,6 +52,12 @@ def get_token(force=False):
         _tok["exp"] = now + min(int(j.get("expires_in", 3600)), 3600) - 60
         return _tok["v"]
 
+class NavigaMismatch(Exception):
+    """The customer ID is real but isn't the account on that order (often bill-to vs ship-to)."""
+
+class NavigaNoSuchRecord(Exception):
+    """No order/invoice exists with that ID."""
+
 def naviga_get(path, params):
     """GET with one automatic fresh-token retry on 401 (the intermittent-401 killer)."""
     for attempt in (0, 1):
@@ -61,6 +67,15 @@ def naviga_get(path, params):
             params=params, timeout=TIMEOUT)
         if r.status_code == 401 and attempt == 0:
             continue  # stale/rejected token -> refetch fresh and retry once
+        # Naviga answers a BAD IDENTIFIER with HTTP 500 + a validation message, not a 404.
+        # Left as an HTTPError these read to the caller as "the system is down", when really
+        # they just mistyped a number -- so classify them and let the agent offer a retry.
+        if r.status_code == 500:
+            body = (r.text or "")
+            if "does not have access to order" in body:
+                raise NavigaMismatch()
+            if "Cannot read data with ID" in body:
+                raise NavigaNoSuchRecord()
         r.raise_for_status()
         return r.json()
 
@@ -287,6 +302,15 @@ def handle():
                         "detail": "unauthorized"}), 200
     try:
         return jsonify(track(request.get_json(force=True, silent=True) or {})), 200
+    except NavigaMismatch:
+        # NOT a system failure -- the agent should offer another number, not apologise for an outage.
+        return jsonify({"found": False, "status": "not_found", "reason": "customer_mismatch",
+                        "message": ("That customer number isn't the account on that order. "
+                                    "If the order was placed by another location, the billing "
+                                    "account number is the one to use.")}), 200
+    except NavigaNoSuchRecord:
+        return jsonify({"found": False, "status": "not_found", "reason": "no_such_record",
+                        "message": "I'm not finding an order or invoice with that number."}), 200
     except requests.HTTPError:
         return jsonify({"found": False, "status": "error", "message": "The order system is temporarily unavailable."}), 200
     except Exception:
