@@ -203,11 +203,13 @@ def consolidate(detail, order=None):
     else:                                 # fallback: infer from trackings
         status = "shipped" if trackings else "preparing"
     # Naviga marks online/download licences fulfilled by QUANTITY but never produces a tracking
-    # number or a ship date for them -- e.g. "EDMARK 2E ONLINE" orders 3141630 / 3140117 / 3139882.
+    # number for them -- e.g. "EDMARK 2E ONLINE" orders 3141630 / 3140117 / 3139882.
     # We cannot prove an item is digital (the same product books under both "Customer pick up" and
     # "BEST WAY", and every Download* field reads 0 even on the digital order), but we CAN say we
     # have no shipment to describe -- so don't let the flow claim one, or read a null carrier.
-    if status == "shipped" and not trackings and not ship_date:
+    # NB: a ship date is NOT a usable signal here -- order 3141630's picklist carries
+    # ShipDate 2026-09-15 with PicklistTracking []. Absence of tracking is the discriminator.
+    if status == "shipped" and not trackings:
         status = "fulfilled_no_tracking"
 
     out = {"found": True, "status": status,
