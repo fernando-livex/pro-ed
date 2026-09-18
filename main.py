@@ -323,8 +323,13 @@ def track(payload):
                                     "from your invoice.")}
         order_id = inv
     else:
-        return {"found": False, "status": "error",
-                "message": "Please provide a P O number, or a customer ID and invoice number."}
+        # NOT status "error": the flow speaks an outage line for that, and conversation
+        # 05b566c7 showed a caller told "we're having trouble reaching the system" when the
+        # real problem was that customer_id never made it into memory. not_found routes to
+        # the branch that re-asks and offers alternatives, which is what should happen.
+        return {"found": False, "status": "not_found", "reason": "missing_identifier",
+                "message": ("I didn't catch that last number. I can take your purchase order "
+                            "number, or your order number along with the name on the account.")}
     result = consolidate(booksuborder(order_id, customer_id), order)
     # Include the on-file email so the flow can offer to send it without a second call.
     # Set {"include_email": false} in the request to skip (saves ~one Naviga call).
