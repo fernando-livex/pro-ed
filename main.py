@@ -160,6 +160,33 @@ def pick_by_zip(cands, zip_in):
             return pref[0]
     return None
 
+
+def search_customer(name):
+    """Resolve a caller-spoken last name (or company) to their BILL-TO account.
+
+    /api/customerservice/search?Name= is a case-insensitive PREFIX match on last name or
+    company name. It returns ONE account or the sentinel BillToCustomerID 0 -- never a list,
+    and never any hint that the match was ambiguous ("Queen Anne" -> "QUEEN ANNE'S COUNTY").
+    So the id it hands back is a CANDIDATE only. The caller is not verified by this call and
+    the account is not confirmed: booksuborder does that, by rejecting an account that does
+    not own the invoice. Returns (customer_id, zips) with zips from the account addresses.
+    """
+    if not name:
+        return "", []
+    try:
+        data = naviga_get("/api/customerservice/search", {"WebsiteID": WEBSITE_ID, "Name": name})
+    except Exception:
+        return "", []
+    cid = data.get("BillToCustomerID") or data.get("CustomerID") or 0
+    try:
+        cid = int(cid)
+    except (TypeError, ValueError):
+        cid = 0
+    if cid <= 0:                       # 0 is Naviga's "no match" sentinel
+        return "", []
+    zips = [str(a.get("PostCode") or "") for a in (data.get("Addresses") or []) if a.get("PostCode")]
+    return str(cid), zips
+
 def consolidate(detail, order=None):
     if not detail or not detail.get("OrderID"):
         return {"found": False, "status": "not_found", "message": "No order found for that request."}
@@ -281,8 +308,20 @@ def track(payload):
             return result
         order = sorted(orders, key=lambda o: str(o.get("OrderDate") or ""), reverse=True)[0]
         order_id, customer_id = order.get("OrderID"), order.get("BillToCustomerID")
-    elif cust and inv:
-        order_id, customer_id = inv, cust
+    elif inv and (cust or payload.get("lastname")):
+        customer_id = cust
+        if not customer_id:
+            # No customer number -- resolve the account from the name the caller gave.
+            # Deliberately NOT gated on the zip: a name match plus an invoice that Naviga
+            # agrees belongs to that account is the proof. The zip is the caller-verification
+            # factor and is reported below, exactly as on the P O path.
+            customer_id, acct_zips = search_customer(payload.get("lastname"))
+            if not customer_id:
+                return {"found": False, "status": "not_found", "reason": "name_no_match",
+                        "message": ("I'm not finding an account under that name. "
+                                    "I can try a different spelling, or the account number "
+                                    "from your invoice.")}
+        order_id = inv
     else:
         return {"found": False, "status": "error",
                 "message": "Please provide a P O number, or a customer ID and invoice number."}
