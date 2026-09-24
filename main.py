@@ -225,6 +225,15 @@ def consolidate(detail, order=None):
         except (TypeError, ValueError): return 0.0
     ordered = sum(_num(li.get("QuantityOrdered")) for li in lineitems)
     shipped = sum(_num(li.get("QuantityShipped")) for li in lineitems)
+    # Back orders: a caller was told their order would ship in a few days when the only item on
+    # it was on back order (order 3140464, reported 23 Sep). Surface the quantities so the agent
+    # can say so. Every order we can currently reach is fully shipped, so QuantityOnBackOrder is
+    # unproven against a live back order -- hence QuantityOpen as a second signal, and hence
+    # nothing here CHANGES a status: if both read 0 the agent simply says nothing about it.
+    backordered = sum(_num(li.get("QuantityOnBackOrder")) for li in lineitems)
+    still_open = sum(_num(li.get("QuantityOpen")) for li in lineitems)
+    backordered_items = [(li.get("ProductTitle") or li.get("Title"))
+                         for li in lineitems if _num(li.get("QuantityOnBackOrder")) > 0]
     if ordered > 0:                       # quantity data present -> exact
         status = "preparing" if shipped <= 0 else ("partial" if shipped < ordered else "shipped")
     else:                                 # fallback: infer from trackings
@@ -239,7 +248,13 @@ def consolidate(detail, order=None):
     if status == "shipped" and not trackings:
         status = "fulfilled_no_tracking"
 
+    # Whole order on back order vs. part of it - the caller needs a different sentence for each.
+    whole_order_backordered = bool(backordered and ordered and backordered >= ordered and shipped <= 0)
     out = {"found": True, "status": status,
+           "backorder_qty": int(backordered),
+           "backorder_items": backordered_items,
+           "whole_order_backordered": whole_order_backordered,
+           "unshipped_qty": int(still_open),
            "order_id": detail.get("OrderID"),                # this is the invoice / order id
            "po_number": detail.get("PONumber"),
            "customer_name": detail.get("SoldToCustomerName") or detail.get("BillToCustomerName"),
