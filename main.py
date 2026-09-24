@@ -230,10 +230,15 @@ def consolidate(detail, order=None):
     # can say so. Every order we can currently reach is fully shipped, so QuantityOnBackOrder is
     # unproven against a live back order -- hence QuantityOpen as a second signal, and hence
     # nothing here CHANGES a status: if both read 0 the agent simply says nothing about it.
-    backordered = sum(_num(li.get("QuantityOnBackOrder")) for li in lineitems)
+    # Naviga says it outright on the line item — StatusDescription "Backordered" (order 3140464).
+    # Trust that first; fall back to the quantity, which can be 0 on an older record.
+    def _is_bo(li):
+        return "backorder" in (li.get("StatusDescription") or li.get("LineStatus") or "").lower()
+    backordered = sum(_num(li.get("QuantityOnBackOrder")) or (_num(li.get("QuantityOrdered")) if _is_bo(li) else 0)
+                      for li in lineitems)
     still_open = sum(_num(li.get("QuantityOpen")) for li in lineitems)
     backordered_items = [(li.get("ProductTitle") or li.get("Title"))
-                         for li in lineitems if _num(li.get("QuantityOnBackOrder")) > 0]
+                         for li in lineitems if _num(li.get("QuantityOnBackOrder")) > 0 or _is_bo(li)]
     if ordered > 0:                       # quantity data present -> exact
         status = "preparing" if shipped <= 0 else ("partial" if shipped < ordered else "shipped")
     else:                                 # fallback: infer from trackings
