@@ -101,6 +101,77 @@ def account_email(customer_id):
     preferred = next((e.get("Address") for e in emails if e.get("IsPreferred")), None) or (addrs[0] if addrs else None)
     return preferred, addrs
 
+
+def _digits(s):
+    return re.sub(r"\D", "", str(s or ""))
+
+
+def ar_fields(customer_id, order_id):
+    """True accounts-receivable balance for ONE invoice, from Naviga's book/openinvoices.
+
+    Why this exists: the order record's BalanceAmount is an ORDER-side figure and is NOT
+    what the customer owes. The invoice agentflow refuses to quote any amount unless it
+    gets `ar_status` + `invoice_balance_text` from here, so until this returns something
+    the agent correctly deflects every balance question to Accounts Receivable.
+
+    Contract with Naviga (per Ankit, CSM-11493):
+      input   CustomerID (+ WebsiteID)
+      output  OpenInvoices[] of {InvoiceID, InvoiceDate, Module, InvoiceAmount,
+              TaxAmount, Balance}
+      Balance is the GROSS total (InvoiceAmount + TaxAmount) LESS any payments, so
+      78.25 + 11.74 = 89.99 unpaid, and 40.00 after a 49.99 part payment.
+      It returns OPEN invoices only and errors when nothing matches.
+
+    We never emit ar_status="paid". This endpoint cannot prove payment: an invoice absent
+    from the list may be paid, never invoiced, or in another module. Saying "paid in full"
+    on an absence would be a false statement about money, so absence maps to "none_open"
+    ("we don't show an open balance"), which is what the flow already says.
+
+    Never raises -- the balance is an extra, and tracking must answer without it.
+    """
+    out = {"ar_status": "unknown", "invoice_balance_text": "", "partially_paid": "no"}
+    if not (customer_id and order_id):
+        out["ar_reason"] = "missing_identifier"
+        return out
+    try:
+        data = naviga_get("/api/book/openinvoices",
+                          {"WebsiteID": WEBSITE_ID, "CustomerID": customer_id})
+    except Exception as ex:
+        # Not deployed on this website id yet (404), or a transient failure. Either way the
+        # agent must fall through to the AR hand-off rather than guess at a number.
+        out["ar_reason"] = "lookup_failed: %s" % type(ex).__name__
+        return out
+
+    invoices = data.get("OpenInvoices") or []
+    want = _digits(order_id)
+    # Their InvoiceID carries a module prefix -- "TWOP558448" in Ankit's CIRC example, and
+    # Duane says book invoices read as "BW" + the order id. Our order_id is bare digits, so
+    # match on digits alone rather than equality.
+    hit = next((inv for inv in invoices if _digits(inv.get("InvoiceID")) == want), None)
+    if hit is None:
+        out["ar_status"] = "none_open"
+        out["ar_reason"] = "not_in_open_list(%d open)" % len(invoices)
+        return out
+
+    def _money(x):
+        try: return float(str(x).replace(",", "").replace("$", "") or 0)
+        except (TypeError, ValueError): return 0.0
+
+    bal   = _money(hit.get("Balance"))
+    gross = _money(hit.get("InvoiceAmount")) + _money(hit.get("TaxAmount"))
+    if bal <= 0:
+        out["ar_status"] = "none_open"
+        out["ar_reason"] = "zero_balance"
+        return out
+
+    out["ar_status"] = "open"
+    out["invoice_balance_text"] = "${:,.2f}".format(bal)
+    # A part payment is the one case where the amount owed differs from the invoice total,
+    # and the flow has a separate sentence for it.
+    out["partially_paid"] = "yes" if gross > 0 and bal < gross - 0.005 else "no"
+    out["ar_invoice_date"] = hit.get("InvoiceDate")
+    return out
+
 # ---- shape the slim, speakable response -----------------------------------------
 def carrier_of(ref):
     if not ref: return None
@@ -365,6 +436,11 @@ def track(payload):
         result["zip_match"] = ("exact"   if len(zip_in) >= 5 and z == zip_in[:5]
                                else "prefix3" if z and z.startswith(zip_in[:3])
                                else "mismatch")
+    # True AR balance for the matched invoice. Additive and non-fatal: while Naviga has
+    # openinvoices disabled for this website id it returns ar_status="unknown", which is
+    # exactly what the flow already handles by handing the caller to Accounts Receivable.
+    if result.get("found"):
+        result.update(ar_fields(customer_id, result.get("order_id")))
     return result
 
 def handle():
