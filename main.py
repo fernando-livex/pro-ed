@@ -134,15 +134,24 @@ def ar_fields(customer_id, order_id):
         out["ar_reason"] = "missing_identifier"
         return out
     try:
+        # The customer id goes in `id`, NOT `CustomerID` -- the swagger is
+        # `GET api/book/openinvoices?id={id}&WebsiteID={WebsiteID}`, same convention as
+        # customerservice/account above. Sending CustomerID returns a 400
+        # ("The id field is required"), which reads as a dead endpoint if you don't look.
         data = naviga_get("/api/book/openinvoices",
-                          {"WebsiteID": WEBSITE_ID, "CustomerID": customer_id})
+                          {"id": customer_id, "WebsiteID": WEBSITE_ID})
     except Exception as ex:
-        # Not deployed on this website id yet (404), or a transient failure. Either way the
-        # agent must fall through to the AR hand-off rather than guess at a number.
+        # Transient failure, or a customer Naviga will not answer for. Either way the agent
+        # must fall through to the AR hand-off rather than guess at a number.
         out["ar_reason"] = "lookup_failed: %s" % type(ex).__name__
         return out
 
     invoices = data.get("OpenInvoices") or []
+    # Whole-account figure Naviga returns alongside the list. Useful when the caller asks
+    # "what do we owe" rather than about one invoice, and it lets the agent say how many
+    # invoices make up the total.
+    out["ar_total_outstanding"] = data.get("TotalOutstandingInvoice")
+    out["ar_open_count"] = len(invoices)
     want = _digits(order_id)
     # Their InvoiceID carries a module prefix -- "TWOP558448" in Ankit's CIRC example, and
     # Duane says book invoices read as "BW" + the order id. Our order_id is bare digits, so
@@ -437,7 +446,7 @@ def track(payload):
                                else "prefix3" if z and z.startswith(zip_in[:3])
                                else "mismatch")
     # True AR balance for the matched invoice. Additive and non-fatal: while Naviga has
-    # openinvoices disabled for this website id it returns ar_status="unknown", which is
+    # Naviga cannot answer for a customer it returns ar_status="unknown", which is
     # exactly what the flow already handles by handing the caller to Accounts Receivable.
     if result.get("found"):
         result.update(ar_fields(customer_id, result.get("order_id")))
